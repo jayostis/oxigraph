@@ -1086,3 +1086,52 @@ fn is_named_node_pattern_bound(pattern: &NamedNodePattern, input_types: &Variabl
         NamedNodePattern::Variable(v) => !input_types.get(v).undef,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxrdf::NamedNode;
+
+    fn quad(subject: &str, predicate: NamedNodePattern, object: &str) -> GraphPattern {
+        GraphPattern::QuadPattern {
+            subject: Variable::new_unchecked(subject).into(),
+            predicate,
+            object: Variable::new_unchecked(object).into(),
+            graph_name: None,
+        }
+    }
+
+    fn any(variable: &str) -> NamedNodePattern {
+        Variable::new_unchecked(variable).into()
+    }
+
+    fn join(left: GraphPattern, right: GraphPattern) -> GraphPattern {
+        GraphPattern::join(left, right, JoinAlgorithm::default())
+    }
+
+    #[test]
+    fn builds_the_hash_join_from_the_cheaper_side_on_any_pointer_width() {
+        // The product of the first two costs 10^18 and the subquery 10^15: both are
+        // above u32::MAX, where a 32-bit estimate saturates and ties.
+        let cheaper = GraphPattern::distinct(join(
+            quad("e", any("r"), "f"),
+            quad(
+                "g",
+                NamedNode::new_unchecked("http://example.com/s").into(),
+                "h",
+            ),
+        ));
+        let optimized = Optimizer::optimize_graph_pattern(join(
+            join(quad("a", any("p"), "b"), quad("c", any("q"), "d")),
+            cheaper,
+        ));
+        let GraphPattern::Join { left, .. } = optimized else {
+            panic!("the three parts are joined");
+        };
+        let mut build_side = Vec::new();
+        left.lookup_used_variables(&mut |v| build_side.push(v.as_str().to_owned()));
+        build_side.sort();
+        build_side.dedup();
+        assert_eq!(build_side, ["e", "f", "g", "h", "r"]);
+    }
+}
