@@ -1521,6 +1521,7 @@ fn does_contain_exists(expression: &Expression) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxrdf::NamedNode;
 
     fn estimate_slice_size(offset: u64, limit: Option<u64>) -> u64 {
         estimate_query_expression_size(
@@ -1538,5 +1539,48 @@ mod tests {
         assert_eq!(estimate_slice_size(2, Some(1)), 1);
         assert_eq!(estimate_slice_size(6, Some(1)), 0);
         assert_eq!(estimate_slice_size(2, None), 3);
+    }
+
+    fn quad(subject: &str, predicate: NamedNodePattern, object: &str) -> QueryExpression {
+        QueryExpression::QuadPattern {
+            subject: Variable::new_unchecked(subject.to_owned()).into(),
+            predicate,
+            object: Variable::new_unchecked(object.to_owned()).into(),
+            graph_name: None,
+        }
+    }
+
+    fn any(variable: &str) -> NamedNodePattern {
+        Variable::new_unchecked(variable.to_owned()).into()
+    }
+
+    fn join(left: QueryExpression, right: QueryExpression) -> QueryExpression {
+        QueryExpression::join(left, right, JoinAlgorithm::default())
+    }
+
+    #[test]
+    fn builds_the_hash_join_from_the_cheaper_side_on_any_pointer_width() {
+        // The product of the first two costs 10^18 and the subquery 10^15: both are
+        // above u32::MAX, where a 32-bit estimate saturates and ties.
+        let cheaper = QueryExpression::distinct(join(
+            quad("e", any("r"), "f"),
+            quad(
+                "g",
+                NamedNode::new_unchecked("http://example.com/s").into(),
+                "h",
+            ),
+        ));
+        let optimized = Optimizer::optimize_query_expression(join(
+            join(quad("a", any("p"), "b"), quad("c", any("q"), "d")),
+            cheaper,
+        ));
+        let QueryExpression::Join { left, .. } = optimized else {
+            unreachable!("the three parts are joined");
+        };
+        let mut build_side = Vec::new();
+        left.lookup_used_variables(&mut |v| build_side.push(v.as_str().to_owned()));
+        build_side.sort();
+        build_side.dedup();
+        assert_eq!(build_side, ["e", "f", "g", "h", "r"]);
     }
 }
